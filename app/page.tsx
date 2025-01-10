@@ -1,101 +1,125 @@
-import Image from "next/image";
+"use client"
+
+import { useState, useEffect, useRef } from "react";
+import { Mic } from 'lucide-react';
+import * as d3 from 'd3';
+
+interface Node extends d3.SimulationNodeDatum {
+  radius: number;
+}
 
 export default function Home() {
-  return (
-    <div className="grid grid-rows-[20px_1fr_20px] items-center justify-items-center min-h-screen p-8 pb-20 gap-16 sm:p-20 font-[family-name:var(--font-geist-sans)]">
-      <main className="flex flex-col gap-8 row-start-2 items-center sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={180}
-          height={38}
-          priority
-        />
-        <ol className="list-inside list-decimal text-sm text-center sm:text-left font-[family-name:var(--font-geist-mono)]">
-          <li className="mb-2">
-            Get started by editing{" "}
-            <code className="bg-black/[.05] dark:bg-white/[.06] px-1 py-0.5 rounded font-semibold">
-              app/page.tsx
-            </code>
-            .
-          </li>
-          <li>Save and see your changes instantly.</li>
-        </ol>
+  const [isPressed, setIsPressed] = useState(false);
+  const [position, setPosition] = useState({ x: 0, y: 0 });
+  const [pressStartTime, setPressStartTime] = useState<number | null>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const nodesRef = useRef<Node[]>([]);
+  const simulationRef = useRef<d3.Simulation<Node, undefined> | null>(null);
 
-        <div className="flex gap-4 items-center flex-col sm:flex-row">
-          <a
-            className="rounded-full border border-solid border-transparent transition-colors flex items-center justify-center bg-foreground text-background gap-2 hover:bg-[#383838] dark:hover:bg-[#ccc] text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={20}
-              height={20}
-            />
-            Deploy now
-          </a>
-          <a
-            className="rounded-full border border-solid border-black/[.08] dark:border-white/[.145] transition-colors flex items-center justify-center hover:bg-[#f2f2f2] dark:hover:bg-[#1a1a1a] hover:border-transparent text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 sm:min-w-44"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Read our docs
-          </a>
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    
+    const context = canvas.getContext('2d')!;
+    
+    // Set canvas size
+    const resizeCanvas = () => {
+      canvas.width = canvas.offsetWidth;
+      canvas.height = canvas.offsetHeight;
+    };
+    resizeCanvas();
+    window.addEventListener('resize', resizeCanvas);
+
+    // Initialize simulation
+    simulationRef.current = d3.forceSimulation<Node>()
+      .force('collision', d3.forceCollide<Node>().radius(d => d.radius))
+      .force('charge', d3.forceManyBody<Node>().strength(5))
+      .on('tick', () => {
+        // Clear canvas
+        context.clearRect(0, 0, canvas.width, canvas.height);
+        
+        // Draw nodes
+        nodesRef.current.forEach(node => {
+          context.beginPath();
+          context.arc(node.x ?? 0, node.y ?? 0, node.radius, 0, 2 * Math.PI);
+          context.fillStyle = 'rgba(59, 130, 246, 0.5)'; // blue-500 with opacity
+          context.fill();
+        });
+      });
+
+    return () => {
+      window.removeEventListener('resize', resizeCanvas);
+      simulationRef.current?.stop();
+    };
+  }, []);
+
+  useEffect(() => {
+    const handleMouseMove = (e: MouseEvent) => {
+      setPosition({ x: e.clientX, y: e.clientY });
+    };
+
+    const handleMouseDown = () => {
+      setIsPressed(true);
+      setPressStartTime(Date.now());
+    };
+
+    const handleMouseUp = () => {
+      setIsPressed(false);
+      if (pressStartTime && canvasRef.current) {
+        const pressDuration = Date.now() - pressStartTime;
+        const radius = Math.min(Math.max(pressDuration / 50, 10), 50); // Convert duration to radius (min 10, max 50)
+        
+        const rect = canvasRef.current.getBoundingClientRect();
+        const newNode = {
+          x: position.x - rect.left,
+          y: position.y - rect.top,
+          radius: radius
+        };
+        
+        nodesRef.current = [...nodesRef.current, newNode];
+        simulationRef.current?.nodes(nodesRef.current);
+        simulationRef.current?.alpha(1).restart();
+      }
+      setPressStartTime(null);
+    };
+
+    document.addEventListener('mousemove', handleMouseMove);
+    document.addEventListener('mousedown', handleMouseDown);
+    document.addEventListener('mouseup', handleMouseUp);
+
+    return () => {
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mousedown', handleMouseDown);
+      document.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, [position, pressStartTime]);
+
+  return (
+    <div className="relative w-full h-screen overflow-hidden cursor-none">
+      {/* Canvas Container */}
+      <div className="w-full h-full bg-white border border-gray-200 shadow-lg">
+        <canvas ref={canvasRef} className="w-full h-full" />
+      </div>
+      
+      {/* Floating Microphone that follows cursor */}
+      <div 
+        className="fixed pointer-events-none"
+        style={{ 
+          left: position.x - 24,
+          top: position.y - 24,
+        }}
+      >
+        <div
+          className={`p-4 rounded-full bg-blue-500 transition-all duration-200 ${
+            isPressed ? 'bg-blue-700 scale-125' : 'bg-blue-500 scale-100'
+          }`}
+        >
+          <Mic 
+            className="text-white" 
+            size={24}
+          />
         </div>
-      </main>
-      <footer className="row-start-3 flex gap-6 flex-wrap items-center justify-center">
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/file.svg"
-            alt="File icon"
-            width={16}
-            height={16}
-          />
-          Learn
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/window.svg"
-            alt="Window icon"
-            width={16}
-            height={16}
-          />
-          Examples
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/globe.svg"
-            alt="Globe icon"
-            width={16}
-            height={16}
-          />
-          Go to nextjs.org →
-        </a>
-      </footer>
+      </div>
     </div>
   );
 }
