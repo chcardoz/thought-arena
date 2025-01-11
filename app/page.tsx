@@ -3,9 +3,23 @@
 import { useState, useEffect, useRef } from "react";
 import { Mic } from 'lucide-react';
 import * as d3 from 'd3';
+import { useAudioRecording } from "@/app/hooks/useAudioRecording";
+import useSWR,{mutate} from 'swr'
 
 interface Node extends d3.SimulationNodeDatum {
   radius: number;
+  text?: string;
+}
+
+const fetcher = async (url:string,blob:Blob) => {
+  const formData = new FormData();
+  formData.append('audio',blob)
+  
+  const response = await fetch(url, {
+    method: 'POST',
+    body: formData
+  })
+  return response.json()
 }
 
 export default function Home() {
@@ -15,6 +29,30 @@ export default function Home() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const nodesRef = useRef<Node[]>([]);
   const simulationRef = useRef<d3.Simulation<Node, undefined> | null>(null);
+  const { isRecording, startRecording, stopRecording } = useAudioRecording();
+  const [currentAudioBlob,setCurrentAudioBlob] = useState<Blob|null>(null)
+
+  const {data: transcription} = useSWR(
+    currentAudioBlob ? ['/api/transcribe',currentAudioBlob] : null,
+    ([url, blob]) => fetcher(url,blob),
+  )
+
+  useEffect(() => {
+    if (transcription && canvasRef.current) {
+      const rect = canvasRef.current.getBoundingClientRect();
+      const newNode = {
+        x: position.x - rect.left,
+        y: position.y - rect.top,
+        radius: 50,
+        text: transcription.text
+      }
+
+      nodesRef.current = [...nodesRef.current, newNode];
+      simulationRef.current?.nodes(nodesRef.current);
+      simulationRef.current?.alpha(1).restart();
+      setCurrentAudioBlob(null);
+    }
+  },[transcription,position])
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -22,7 +60,6 @@ export default function Home() {
     
     const context = canvas.getContext('2d')!;
     
-    // Set canvas size
     const resizeCanvas = () => {
       canvas.width = canvas.offsetWidth;
       canvas.height = canvas.offsetHeight;
@@ -30,20 +67,24 @@ export default function Home() {
     resizeCanvas();
     window.addEventListener('resize', resizeCanvas);
 
-    // Initialize simulation
     simulationRef.current = d3.forceSimulation<Node>()
       .force('collision', d3.forceCollide<Node>().radius(d => d.radius))
       .force('charge', d3.forceManyBody<Node>().strength(5))
       .on('tick', () => {
-        // Clear canvas
         context.clearRect(0, 0, canvas.width, canvas.height);
-        
-        // Draw nodes
         nodesRef.current.forEach(node => {
           context.beginPath();
           context.arc(node.x ?? 0, node.y ?? 0, node.radius, 0, 2 * Math.PI);
-          context.fillStyle = 'rgba(59, 130, 246, 0.5)'; // blue-500 with opacity
+          context.fillStyle = 'rgba(59, 130, 246, 0.5)';
           context.fill();
+          
+          if (node.text) {
+            context.font = '14px Arial';
+            context.fillStyle = 'black';
+            context.textAlign = 'center';
+            context.textBaseline = 'middle';
+            context.fillText(node.text, node.x ?? 0, node.y ?? 0);
+          }
         });
       });
 
@@ -58,29 +99,15 @@ export default function Home() {
       setPosition({ x: e.clientX, y: e.clientY });
     };
 
-    const handleMouseDown = () => {
+    const handleMouseDown = async () => {
       setIsPressed(true);
-      setPressStartTime(Date.now());
+      await startRecording();
     };
 
-    const handleMouseUp = () => {
+    const handleMouseUp = async () => {
       setIsPressed(false);
-      if (pressStartTime && canvasRef.current) {
-        const pressDuration = Date.now() - pressStartTime;
-        const radius = Math.min(Math.max(pressDuration / 50, 10), 50); // Convert duration to radius (min 10, max 50)
-        
-        const rect = canvasRef.current.getBoundingClientRect();
-        const newNode = {
-          x: position.x - rect.left,
-          y: position.y - rect.top,
-          radius: radius
-        };
-        
-        nodesRef.current = [...nodesRef.current, newNode];
-        simulationRef.current?.nodes(nodesRef.current);
-        simulationRef.current?.alpha(1).restart();
-      }
-      setPressStartTime(null);
+      const audioBlob = await stopRecording();
+      setCurrentAudioBlob(audioBlob);
     };
 
     document.addEventListener('mousemove', handleMouseMove);
@@ -92,16 +119,15 @@ export default function Home() {
       document.removeEventListener('mousedown', handleMouseDown);
       document.removeEventListener('mouseup', handleMouseUp);
     };
-  }, [position, pressStartTime]);
+  }, [startRecording, stopRecording]);
 
   return (
     <div className="relative w-full h-screen overflow-hidden cursor-none">
-      {/* Canvas Container */}
-      <div className="w-full h-full bg-white border border-gray-200 shadow-lg">
-        <canvas ref={canvasRef} className="w-full h-full" />
+      <h1 className="fixed left-[calc(50%-9rem)] top-6 text-3xl font-bold text-gray-800 drop-shadow-2xl">THOUGHT ARENA</h1>
+      <div className="w-full h-full bg-gray-100 p-5">
+        <canvas ref={canvasRef} className="w-full h-full bg-white rounded-lg shadow-lg" />
       </div>
       
-      {/* Floating Microphone that follows cursor */}
       <div 
         className="fixed pointer-events-none"
         style={{ 
