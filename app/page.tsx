@@ -1,65 +1,107 @@
-"use client"
+'use client';
 
-import { useState, useEffect, useRef } from "react";
-import { Mic } from 'lucide-react';
+import { useState, useEffect, useRef } from 'react';
+import { Mic, X } from 'lucide-react';
 import * as d3 from 'd3';
-import { useAudioRecording } from "@/app/hooks/useAudioRecording";
-import useSWR,{mutate} from 'swr'
+import { useAudioRecording } from '@/app/hooks/useAudioRecording';
+import useSWR from 'swr';
 
 interface Node extends d3.SimulationNodeDatum {
-  radius: number;
-  text?: string;
+  id: string;
+  text: string;
 }
 
-const fetcher = async (url:string,blob:Blob) => {
-  const formData = new FormData();
-  formData.append('audio',blob)
-  
-  const response = await fetch(url, {
-    method: 'POST',
-    body: formData
-  })
-  return response.json()
+interface Link extends d3.SimulationLinkDatum<Node> {
+  source: string | Node;
+  target: string | Node;
 }
+
+const fetcher = async (url: string, body: any, options: RequestInit = {}) => {
+  const { headers = {}, ...restOptions } = options;
+
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {
+      ...headers,
+      ...(body instanceof FormData ? {} : { 'Content-Type': 'application/json' }),
+    },
+    body: body instanceof FormData ? body : JSON.stringify(body),
+    ...restOptions,
+  });
+
+  if (!res.ok) throw new Error(`HTTP error! status: ${res.status}`);
+  return res.json();
+};
 
 export default function Home() {
   const [isPressed, setIsPressed] = useState(false);
   const [position, setPosition] = useState({ x: 0, y: 0 });
-  const [pressStartTime, setPressStartTime] = useState<number | null>(null);
+  const [nodes, setNodes] = useState<Node[]>([]);
+  const [links, setLinks] = useState<Link[]>([]);
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const nodesRef = useRef<Node[]>([]);
   const simulationRef = useRef<d3.Simulation<Node, undefined> | null>(null);
   const { isRecording, startRecording, stopRecording } = useAudioRecording();
-  const [currentAudioBlob,setCurrentAudioBlob] = useState<Blob|null>(null)
+  const [currentAudioBlob, setCurrentAudioBlob] = useState<Blob | null>(null);
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  const {data: transcription} = useSWR(
-    currentAudioBlob ? ['/api/transcribe',currentAudioBlob] : null,
-    ([url, blob]) => fetcher(url,blob),
-  )
+  const stateRef = useRef({ nodes, links });
+  useEffect(() => {
+    stateRef.current = { nodes, links };
+  }, [nodes, links]);
+
+  const { data: transcription, mutate: mutateTranscription } = useSWR(
+    currentAudioBlob ? ['/api/transcribe', currentAudioBlob] : null,
+    ([url, blob]) => {
+      const formData = new FormData();
+      formData.append('audio', blob);
+      return fetcher(url, formData);
+    },
+    { 
+      onSuccess: () => setIsLoading(false),
+      onError: (err) => setError(err.message),
+      revalidateOnFocus: false, // Prevent revalidation on window focus
+      revalidateOnReconnect: false // Prevent revalidation on reconnect
+    }
+  );
+
+  const { data: transformedData } = useSWR(
+    transcription ? ['/api/transform', transcription] : null, // Remove nodes and links from key
+    ([url, transcriptionData]) =>
+      fetcher(url, {
+        transcription: transcriptionData,
+        nodes: stateRef.current.nodes,
+        links: stateRef.current.links
+      }),
+    {
+      onSuccess: () => setIsLoading(false),
+      onError: (err) => setError(err.message),
+      revalidateOnFocus: false,
+      revalidateOnReconnect: false
+    }
+  );
 
   useEffect(() => {
-    if (transcription && canvasRef.current) {
-      const rect = canvasRef.current.getBoundingClientRect();
-      const newNode = {
-        x: position.x - rect.left,
-        y: position.y - rect.top,
-        radius: 50,
-        text: transcription.text
-      }
+    if (!transformedData) return;
+    const newNodes = transformedData.nodes;
+    const newLinks = transformedData.links;
 
-      nodesRef.current = [...nodesRef.current, newNode];
-      simulationRef.current?.nodes(nodesRef.current);
-      simulationRef.current?.alpha(1).restart();
-      setCurrentAudioBlob(null);
-    }
-  },[transcription,position])
+    const nodeIds = new Set(newNodes.map((node: Node) => node.id));
+    const filteredLinks = newLinks.filter(
+      (link: Link) =>
+        nodeIds.has(link.source as string) && nodeIds.has(link.target as string)
+    );
+
+    setNodes(newNodes);
+    setLinks(filteredLinks);
+  }, [transformedData]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-    
+
     const context = canvas.getContext('2d')!;
-    
+
     const resizeCanvas = () => {
       canvas.width = canvas.offsetWidth;
       canvas.height = canvas.offsetHeight;
@@ -67,24 +109,80 @@ export default function Home() {
     resizeCanvas();
     window.addEventListener('resize', resizeCanvas);
 
-    simulationRef.current = d3.forceSimulation<Node>()
-      .force('collision', d3.forceCollide<Node>().radius(d => d.radius))
-      .force('charge', d3.forceManyBody<Node>().strength(5))
+    simulationRef.current = d3
+      .forceSimulation<Node>(nodes)
+      .force(
+        'link',
+        d3
+          .forceLink<Node, Link>()
+          .id((d) => d.id)
+          .links(links)
+          .distance(150)
+      )
+      .force('charge', d3.forceManyBody().strength(-50))
+      .force('center', d3.forceCenter(canvas.width / 2, canvas.height / 2))
       .on('tick', () => {
         context.clearRect(0, 0, canvas.width, canvas.height);
-        nodesRef.current.forEach(node => {
+
+        links.forEach((link) => {
+          const source = link.source as Node;
+          const target = link.target as Node;
           context.beginPath();
-          context.arc(node.x ?? 0, node.y ?? 0, node.radius, 0, 2 * Math.PI);
-          context.fillStyle = 'rgba(59, 130, 246, 0.5)';
+          context.moveTo(source.x ?? 0, source.y ?? 0);
+          context.lineTo(target.x ?? 0, target.y ?? 0);
+          context.strokeStyle = '#ccc';
+          context.stroke();
+        });
+
+        nodes.forEach((node) => {
+          const haloRadius = 50;
+          const gradient = context.createRadialGradient(
+            node.x ?? 0,
+            node.y ?? 0,
+            0,
+            node.x ?? 0,
+            node.y ?? 0,
+            haloRadius
+          );
+          gradient.addColorStop(0, 'rgba(59, 130, 246, 0.7)');
+          gradient.addColorStop(1, 'rgba(59, 130, 246, 0.2)');
+
+          context.beginPath();
+          context.arc(node.x ?? 0, node.y ?? 0, haloRadius, 0, 2 * Math.PI);
+          context.fillStyle = gradient;
           context.fill();
-          
-          if (node.text) {
-            context.font = '14px Arial';
-            context.fillStyle = 'black';
-            context.textAlign = 'center';
-            context.textBaseline = 'middle';
-            context.fillText(node.text, node.x ?? 0, node.y ?? 0);
-          }
+
+          const maxWidth = 90;
+          const lineHeight = 18;
+          const words = node.text.split(' ');
+          let line = '';
+          const lines: string[] = [];
+
+          words.forEach((word) => {
+            const testLine = line + word + ' ';
+            if (context.measureText(testLine).width > maxWidth && line) {
+              lines.push(line);
+              line = word + ' ';
+            } else {
+              line = testLine;
+            }
+          });
+          lines.push(line);
+
+          context.font = '16px Arial';
+          context.fillStyle = 'black';
+          context.textAlign = 'center';
+          context.textBaseline = 'middle';
+
+          lines.forEach((line, index) => {
+            context.fillText(
+              line,
+              node.x ?? 0,
+              (node.y ?? 0) -
+                (lines.length / 2) * lineHeight +
+                index * lineHeight
+            );
+          });
         });
       });
 
@@ -92,7 +190,7 @@ export default function Home() {
       window.removeEventListener('resize', resizeCanvas);
       simulationRef.current?.stop();
     };
-  }, []);
+  }, [nodes, links]);
 
   useEffect(() => {
     const handleMouseMove = (e: MouseEvent) => {
@@ -123,14 +221,32 @@ export default function Home() {
 
   return (
     <div className="relative w-full h-screen overflow-hidden cursor-none">
-      <h1 className="fixed left-[calc(50%-9rem)] top-6 text-3xl font-bold text-gray-800 drop-shadow-2xl">THOUGHT ARENA</h1>
+      <h1 className="fixed left-[calc(50%-9rem)] top-6 text-3xl font-bold text-gray-800 drop-shadow-2xl">
+        THOUGHT ARENA
+      </h1>
       <div className="w-full h-full bg-gray-100 p-5">
-        <canvas ref={canvasRef} className="w-full h-full bg-white rounded-lg shadow-lg" />
+        {isLoading && (
+          <div className="absolute inset-0 flex items-center justify-center bg-white bg-opacity-75">
+            Loading...
+          </div>
+        )}
+        {error && (
+          <div className="absolute inset-0 flex items-center justify-center bg-white bg-opacity-75">
+            <div className="text-center">
+              <X className="mx-auto text-red-500" size={48} />
+              <p className="mt-4 text-lg text-red-500">{error}</p>
+            </div>
+          </div>
+        )}
+        <canvas
+          ref={canvasRef}
+          className="w-full h-full bg-white rounded-lg shadow-lg"
+        />
       </div>
-      
-      <div 
+
+      <div
         className="fixed pointer-events-none"
-        style={{ 
+        style={{
           left: position.x - 24,
           top: position.y - 24,
         }}
@@ -140,10 +256,7 @@ export default function Home() {
             isPressed ? 'bg-blue-700 scale-125' : 'bg-blue-500 scale-100'
           }`}
         >
-          <Mic 
-            className="text-white" 
-            size={24}
-          />
+          <Mic className="text-white" size={24} />
         </div>
       </div>
     </div>
