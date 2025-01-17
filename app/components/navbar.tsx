@@ -1,4 +1,3 @@
-import { Button } from '@/app/components/ui/button';
 import { ToggleTheme } from '@/app/components/theme/toggletheme';
 
 export default function Navbar() {

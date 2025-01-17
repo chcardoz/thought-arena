@@ -118,7 +118,7 @@ export default function MainContent() {
     }
   };
 
-  const { data: transcription, mutate: mutateTranscription } = useSWR(
+  const { data: transcription } = useSWR(
     currentAudioBlob ? ['/api/transcribe', currentAudioBlob] : null,
     ([url, blob]) => {
       const formData = new FormData();
