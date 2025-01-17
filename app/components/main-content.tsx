@@ -11,6 +11,8 @@ import {
   reconnectEdge,
   useEdgesState,
   useNodesState,
+  Edge,
+  Connection,
 } from '@xyflow/react';
 import '@xyflow/react/dist/base.css';
 import { useCallback } from 'react';
@@ -20,6 +22,24 @@ import useSWR from 'swr';
 import { fetcher } from '../utils';
 import { LoadingOverlay } from './overlays/loadingoverlay';
 import { ErrorOverlay } from './overlays/erroroverlay';
+
+type CustomEdge = {
+  id: string;
+  source: string;
+  target: string;
+  markerEnd: {
+    type: MarkerType;
+    width: number;
+    height: number;
+    color: string;
+  };
+  style: {
+    strokeWidth: number;
+    stroke: string;
+  };
+  animated: boolean;
+  label: string;
+};
 
 const initNodes = [
   {
@@ -85,7 +105,7 @@ const nodeTypes = {
 
 export default function MainContent() {
   const [nodes, setNodes, onNodesChange] = useNodesState(initNodes);
-  const [edges, setEdges, onEdgesChange] = useEdgesState(initEdges);
+  const [edges, setEdges, onEdgesChange] = useEdgesState<CustomEdge>(initEdges);
   const { isRecording, startRecording, stopRecording } = useAudioRecording();
   const [currentAudioBlob, setCurrentAudioBlob] = useState<Blob | null>(null);
   const [isTranscribing, setIsTranscribing] = useState(false);
@@ -99,12 +119,12 @@ export default function MainContent() {
   }, [nodes, edges]);
 
   const onReconnect = useCallback(
-    (oldEdge, newConnection) =>
-      setEdges((els) => reconnectEdge(oldEdge, newConnection, els)),
+    (oldEdge: Edge, newConnection: Connection) =>
+      setEdges((els) => reconnectEdge(oldEdge, newConnection, els) as CustomEdge[]),
     [],
   );
   const onConnect = useCallback(
-    (params) => setEdges((els) => addEdge(params, els)),
+    (params: Connection) => setEdges((els) => addEdge(params, els) as CustomEdge[]),
     [],
   );
 
