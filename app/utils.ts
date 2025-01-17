@@ -3,6 +3,7 @@ import { twMerge } from "tailwind-merge";
 
 export const fetcher = async (
   url: string,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   body: any,
   options: RequestInit = {}
 ) => {
