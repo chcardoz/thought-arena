@@ -1,6 +1,9 @@
-import systemPrompt from "@/app/constants";
+import { z } from "zod";
 import { NextResponse } from "next/server";
 import { OpenAI } from "openai";
+import { zodResponseFormat } from "openai/helpers/zod";
+import { systemPrompt2 } from "@/app/constants";
+import { GraphStateSchema } from "./zod-schema";
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
@@ -10,45 +13,60 @@ export async function POST(request: Request) {
   try {
     const { transcription, nodes, links } = await request.json();
 
-    if (!transcription || !nodes || !links) {
+    const graphState = { nodes, links };
+    try {
+      GraphStateSchema.parse(graphState);
+    } catch (err) {
+      const errorMessage =
+        err instanceof z.ZodError
+          ? err.errors
+          : "Unknown error during request validation";
       return NextResponse.json(
-        { error: "Missing transcription, nodes, or links in request body" },
+        {
+          error: "Invalid graph structure in request body",
+          details: errorMessage,
+        },
         { status: 400 }
       );
     }
 
     const messages = [
-      { role: 'system' as const, content: systemPrompt },
+      { role: "system" as const, content: systemPrompt2 },
       {
-        role: 'user' as const,
+        role: "user" as const,
         content: JSON.stringify({
           instruction: "Transform the graph based on the transcription.",
           transcription,
-          graphState: { nodes, links },
+          graphState,
         }),
       },
     ];
 
-    const completion = await openai.chat.completions.create({
-      model: "gpt-4",
+    // Use zodResponseFormat for structured output validation
+    const completion = await openai.beta.chat.completions.parse({
+      model: "gpt-4o",
       messages,
       temperature: 0.7,
+      response_format: zodResponseFormat(GraphStateSchema, "graphState"),
     });
 
-    const result = completion.choices[0]?.message?.content;
+    const parsedResult = completion.choices[0]?.message?.parsed;
 
-    if (!result) {
+    if (!parsedResult) {
       return NextResponse.json(
         { error: "No response from the model" },
         { status: 500 }
       );
     }
 
-    const parsedResult = JSON.parse(result);
-
-    return NextResponse.json({ nodes: parsedResult.nodes, links: parsedResult.links });
+    return NextResponse.json({
+      nodes: parsedResult.nodes,
+      links: parsedResult.links,
+    });
   } catch (error) {
-    console.error("Error in transform API:", error);
-    return NextResponse.json({ error: (error as Error).message }, { status: 500 });
+    const errorMessage =
+      error instanceof Error ? error.message : "Unknown server error";
+    console.error("Error in transform API:", errorMessage);
+    return NextResponse.json({ error: errorMessage }, { status: 500 });
   }
 }
